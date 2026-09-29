@@ -220,3 +220,245 @@ mod winner_count_regression {
         }
     }
 }
+
+// ── #991: unique-winner draws must not bias neighbouring ticket holders ─────
+//
+// `resolve_unique_winner` used to walk forward from the originally drawn index
+// (`candidate + 1`, `candidate + 2`, …) until it found an owner that had not
+// already won. Every collision therefore landed on the ticket immediately after
+// the colliding one, so with a small participant set and multiple tiers the
+// holder sitting just past a repeat winner was systematically over-represented
+// and ticket 0 was the least likely winner of all. The probe is replaced by a
+// bounded, domain-separated re-draw (`resample_unique_index`), and these tests
+// pin the resulting distribution.
+//
+// The fixture is deliberately the worst case for the old probe: three owners
+// holding one contiguous block of tickets each, two prize tiers. Ticket blocks
+// are contiguous so a forward walk has somewhere obvious to stop.
+
+#[cfg(test)]
+mod unique_winner_uniformity {
+    use crate::randomness::OracleSeedWinnerSelection;
+
+    /// Number of distinct ticket owners in the fixture below.
+    const OWNERS: u32 = 3;
+    /// Prize tiers drawn per simulation. Two tiers is the minimum that forces a
+    /// second tier to re-draw: the first tier has no prior winner to collide
+    /// with.
+    const TIERS: u32 = 2;
+    /// Owner of `ticket`: one contiguous block of tickets per owner.
+    fn owner_of(ticket: u32, total_tickets: u32) -> u32 {
+        ticket * OWNERS / total_tickets
+    }
+    /// Size of owner 0's ticket block, i.e. the number of tickets that become
+    /// ineligible for the second tier once owner 0 has won.
+    fn first_block_size(total_tickets: u32) -> u32 {
+        (total_tickets + OWNERS - 1) / OWNERS
+    }
+
+    /// Chi-squared statistic of `histogram` against a uniform expectation.
+    fn compute_chi_squared(histogram: &[u32], total_samples: u32) -> f64 {
+        let k = histogram.len() as f64;
+        let expected = total_samples as f64 / k;
+        let mut chi2 = 0.0;
+        for &count in histogram {
+            let diff = count as f64 - expected;
+            chi2 += (diff * diff) / expected;
+        }
+        chi2
+    }
+
+    /// Two-sided Chi-squared critical value at alpha = 0.001.
+    fn critical_value_999(degrees_of_freedom: usize) -> f64 {
+        // Wilson-Hilferty approximation, accurate to a few percent over the
+        // range used here, which is far tighter than the effect being detected.
+        let df = degrees_of_freedom as f64;
+        let z = 3.090232306167813;
+        df * (1.0 - 2.0 / (9.0 * df) + z * (2.0 / (9.0 * df)).sqrt()).powi(3)
+    }
+
+    /// Runs the two-tier `unique_winners = true` draw loop used on-chain and
+    /// returns the tier-1 winners observed when tier 0 went to owner 0.
+    ///
+    /// Conditioning on tier 0 matters: tier 1 can only ever be won by one of
+    /// the two *remaining* owners, so an unconditional histogram over all
+    /// tickets would encode the fixture rather than the selector. Holding tier
+    /// 0 fixed makes "uniform over the eligible tickets" the exact null
+    /// hypothesis.
+    fn tier1_winners_when_tier0_is_owner0(
+        total_tickets: u32,
+        total_draws: u64,
+    ) -> (std::vec::Vec<u32>, u32) {
+        let eligible = first_block_size(total_tickets);
+        let mut histogram = std::vec![0u32; (total_tickets - eligible) as usize];
+        let mut samples = 0u32;
+
+        for raw_seed in 1..=total_draws {
+            let seed = raw_seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+            let selector = OracleSeedWinnerSelection::new(seed);
+            let drawn = selector.select_winner_indices_pure(total_tickets, TIERS);
+            assert_eq!(drawn.len(), TIERS as usize);
+
+            // Tier 0 has no prior winner, so the re-draw accepts its draw
+            // verbatim and the winner is the ordinary uniform draw.
+            let tier0 = selector.resample_unique_index(0, total_tickets, drawn[0], |_| true);
+            assert_eq!(tier0, drawn[0], "tier 0 must not be re-drawn");
+            if owner_of(tier0, total_tickets) != 0 {
+                continue;
+            }
+
+            // Tier 1 must re-draw, since owner 0 has just won.
+            let tier1 = selector.resample_unique_index(1, total_tickets, drawn[1], |index| {
+                owner_of(index, total_tickets) != 0
+            });
+            assert!(
+                (eligible..total_tickets).contains(&tier1),
+                "tier 1 must land on an unclaimed owner's ticket, got {tier1}"
+            );
+
+            histogram[(tier1 - eligible) as usize] += 1;
+            samples += 1;
+        }
+
+        (histogram, samples)
+    }
+
+    /// The headline acceptance criterion: unique-winner draws are uniform over
+    /// the eligible tickets, exactly like ordinary draws.
+    ///
+    /// The old linear probe put ~1/3 of all tier-1 draws on the single ticket
+    /// immediately after owner 0's block instead of the expected ~1/20, so this
+    /// rejects the biased implementation by a wide margin.
+    #[test]
+    fn unique_winner_redraw_is_uniform_over_eligible_tickets() {
+        // 30_000 draws leaves ~10_000 conditioned samples.
+        let total_draws = 30_000u64;
+        let total_tickets = 30u32;
+        let (histogram, samples) = tier1_winners_when_tier0_is_owner0(total_tickets, total_draws);
+
+        assert!(
+            samples >= 1_000,
+            "conditioning on tier 0 must leave a usable sample, got {samples}"
+        );
+        assert_eq!(
+            histogram.iter().filter(|&&c| c == 0).count(),
+            0,
+            "every eligible ticket must be reachable, histogram {histogram:?}"
+        );
+
+        let chi2 = compute_chi_squared(&histogram, samples);
+        let crit = critical_value_999(histogram.len() - 1);
+        assert!(
+            chi2 < crit,
+            "unique-winner re-draw is biased for ticket_count={total_tickets}: \
+             chi2={chi2} >= critical={crit}, histogram={histogram:?}"
+        );
+    }
+
+    /// Same test at a ticket count that is not a multiple of `OWNERS`, so block
+    /// sizes differ and the re-draw cannot lean on alignment.
+    #[test]
+    fn unique_winner_redraw_is_uniform_with_ragged_blocks() {
+        let total_draws = 30_000u64;
+        let total_tickets = 32u32;
+        let (histogram, samples) = tier1_winners_when_tier0_is_owner0(total_tickets, total_draws);
+
+        assert!(samples >= 1_000, "conditioned sample too small: {samples}");
+        let chi2 = compute_chi_squared(&histogram, samples);
+        let crit = critical_value_999(histogram.len() - 1);
+        assert!(
+            chi2 < crit,
+            "unique-winner re-draw is biased for ticket_count={total_tickets}: \
+             chi2={chi2} >= critical={crit}, histogram={histogram:?}"
+        );
+    }
+
+    /// A tier whose original draw is already acceptable is returned untouched,
+    /// so the common path costs no extra randomness and stays reproducible with
+    /// the off-chain `select_winner_indices_pure` mirror.
+    #[test]
+    fn unique_winner_redraw_keeps_an_acceptable_draw() {
+        let selector = OracleSeedWinnerSelection::new(0x0123_4567_89AB_CDEF);
+        let total_tickets = 64u32;
+        for seed_ticket in 0..total_tickets {
+            assert_eq!(
+                selector.resample_unique_index(0, total_tickets, seed_ticket, |index| {
+                    index == seed_ticket
+                }),
+                seed_ticket,
+                "an acceptable draw must be kept verbatim"
+            );
+        }
+    }
+
+    /// Exhausting the retry budget must yield the fallback rather than loop
+    /// forever — the single-address-owns-everything case (#485).
+    #[test]
+    fn unique_winner_redraw_falls_back_when_nothing_is_acceptable() {
+        let selector = OracleSeedWinnerSelection::new(0xFEED_FACE_CAFE_BEEF);
+        let total_tickets = 128u32;
+        for tier_index in 0..8u32 {
+            assert_eq!(
+                selector.resample_unique_index(tier_index, total_tickets, 7, |_| false),
+                7,
+                "with no acceptable ticket the fallback must be returned"
+            );
+        }
+    }
+
+    /// `tier_index` must domain-separate the re-draw stream.
+    ///
+    /// Asserting that every tier yields a *distinct* ticket would be a
+    /// birthday test and would fail by chance roughly two runs in three, so
+    /// what is asserted instead is that the per-tier draw sequences are
+    /// genuinely independent: over many tiers, each ticket should be reached
+    /// at close to the uniform rate. If `tier_index` were ignored, every tier
+    /// would replay one identical stream and the histogram would be a handful
+    /// of over-represented tickets — the same signature #991 reported.
+    #[test]
+    fn unique_winner_redraw_separates_streams_by_tier() {
+        let total_tickets = 64u32;
+        let tiers = 2_000u32;
+        let mut histogram = std::vec![0u32; total_tickets as usize];
+
+        for tier_index in 0..tiers {
+            // Only index 0 is unacceptable, so every tier takes exactly one
+            // fresh LCG sample from its own stream.
+            let idx = OracleSeedWinnerSelection::new(0xA5A5_5A5A_1234_9999).resample_unique_index(
+                tier_index,
+                total_tickets,
+                0,
+                |index| index != 0,
+            );
+            histogram[idx as usize] += 1;
+        }
+
+        let expected = tiers as f64 / total_tickets as f64;
+        let chi2: f64 = histogram
+            .iter()
+            .map(|&c| {
+                let d = c as f64 - expected;
+                d * d / expected
+            })
+            .sum();
+        let crit = critical_value_999(total_tickets as usize - 1);
+        assert!(
+            chi2 < crit,
+            "re-draw streams are not domain-separated by tier_index: \
+             chi2={chi2} >= critical={crit}, histogram={histogram:?}"
+        );
+    }
+
+    /// The re-draw stream must depend on the seed, not just the tier.
+    #[test]
+    fn unique_winner_redraw_separates_streams_by_seed() {
+        let total_tickets = 97u32;
+        let a = OracleSeedWinnerSelection::new(0x1111_1111_1111_1111);
+        let b = OracleSeedWinnerSelection::new(0x2222_2222_2222_2222);
+        assert_ne!(
+            a.resample_unique_index(0, total_tickets, 0, |index| index != 0),
+            b.resample_unique_index(0, total_tickets, 0, |index| index != 0),
+            "distinct seeds must yield distinct re-draw streams"
+        );
+    }
+}
