@@ -224,6 +224,26 @@ Re-commit before pushing.
 
 ---
 
+## 12. Who can call `finalize_raffle`, and when?
+
+**Policy:** **Anyone.** `finalize_raffle` is permissionless and does not require creator authorization.
+
+**When?** Only once the raffle is contractually over, which the contract checks on chain:
+
+- `time_ended` — `ledger_timestamp >= end_time` (not applied when `no_deadline` is `true`), or
+- `tickets_full` — `tickets_sold >= max_tickets`.
+
+Calling it before either condition holds reverts with `InvalidStateTransition`; calling it again
+after the draw has moved on reverts with `InvalidStatus`.
+
+**Why not creator-only?** The preconditions are fully verifiable on chain, so there was no reason
+to gate the call on the creator's signature. Requiring it let a creator who disliked the
+participant set simply never call it, leaving buyers' funds escrowed indefinitely. `refund_ticket`
+was no escape either, because it only applies to a `Cancelled` or `Failed` raffle — admin
+cancellation was the only remaining exit. See [#1000].
+
+---
+
 ## Still stuck?
 
 1. Read [DEVELOPMENT.md](DEVELOPMENT.md) and [DEPLOYMENT.md](DEPLOYMENT.md).

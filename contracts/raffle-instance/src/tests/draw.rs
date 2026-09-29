@@ -1012,3 +1012,122 @@ fn provide_randomness_rejects_mismatched_public_key() {
         "expected OraclePublicKeyMismatch when public_key != registered oracle key"
     );
 }
+
+/// #1000: `finalize_raffle` is permissionless, so a raffle that has passed its
+/// `end_time` can be finalized by a non-creator while the creator signs nothing.
+///
+/// The creator-silent path matters because `refund_ticket` only applies to a
+/// `Cancelled` or `Failed` raffle. When only the creator could finalize, a
+/// creator who simply never called left buyers' funds escrowed with admin
+/// cancellation as the sole exit.
+#[test]
+fn non_creator_finalizes_expired_raffle_when_creator_is_silent() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set_timestamp(1);
+
+    let factory = Address::generate(&env);
+    let admin = Address::generate(&env);
+    let creator = Address::generate(&env);
+    let buyer = Address::generate(&env);
+
+    let token_admin = Address::generate(&env);
+    let (payment_token, token_client) = create_token(&env, &token_admin);
+    token_client.mint(&creator, &1_000_000);
+    token_client.mint(&buyer, &1_000_000);
+
+    let contract_id = env.register(Contract, ());
+    let client = ContractClient::new(&env, &contract_id);
+
+    let config = RaffleConfigBuilder::new(&env, payment_token.clone())
+        .description(String::from_str(&env, "silent creator"))
+        .end_time(1_000)
+        .no_deadline(false)
+        .max_tickets(5)
+        .max_tickets_per_tx(5)
+        .min_tickets(1)
+        .ticket_price(MIN_TICKET_PRICE)
+        .prize_amount(MIN_TICKET_PRICE * 2)
+        .prizes(soroban_sdk::vec![&env, 10_000u32])
+        .randomness_source(RandomnessSource::Internal)
+        .claim_lockup_seconds(0)
+        .build()
+        .expect("valid silent creator config");
+
+    client.init(&factory, &admin, &creator, &config);
+    client.deposit_prize();
+    client.buy_tickets(&buyer, &2);
+    assert_eq!(client.get_raffle().status, RaffleStatus::Active);
+
+    // The raffle is contractually over but the creator never acts again.
+    env.ledger().set_timestamp(1_000);
+
+    // Withdraw every authorization. If `finalize_raffle` still needed the
+    // creator's signature this would revert with an auth error instead.
+    env.set_auths(&[]);
+    client.finalize_raffle();
+
+    // The creator was never asked to sign anything.
+    let authorized: std::vec::Vec<Address> =
+        env.auths().into_iter().map(|(addr, _)| addr).collect();
+    assert!(
+        !authorized.contains(&creator),
+        "finalize_raffle must not require creator authorization"
+    );
+
+    // End to end: the raffle left `Active` and a winner was drawn.
+    let raffle = client.get_raffle();
+    assert_ne!(raffle.status, RaffleStatus::Active);
+    assert_eq!(raffle.winners.len(), 1);
+    assert_eq!(raffle.winners.get(0).unwrap().address, buyer);
+    assert_drawing_lock_cleared(&env, &contract_id);
+}
+
+/// #1000: permissionless must not mean premature. Before `end_time` and while
+/// tickets remain, anyone calling `finalize_raffle` is still rejected.
+#[test]
+fn non_creator_cannot_finalize_before_end_time() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set_timestamp(1);
+
+    let factory = Address::generate(&env);
+    let admin = Address::generate(&env);
+    let creator = Address::generate(&env);
+    let buyer = Address::generate(&env);
+
+    let token_admin = Address::generate(&env);
+    let (payment_token, token_client) = create_token(&env, &token_admin);
+    token_client.mint(&creator, &1_000_000);
+    token_client.mint(&buyer, &1_000_000);
+
+    let contract_id = env.register(Contract, ());
+    let client = ContractClient::new(&env, &contract_id);
+
+    let config = RaffleConfigBuilder::new(&env, payment_token.clone())
+        .description(String::from_str(&env, "premature finalize"))
+        .end_time(1_000)
+        .no_deadline(false)
+        .max_tickets(5)
+        .max_tickets_per_tx(5)
+        .min_tickets(1)
+        .ticket_price(MIN_TICKET_PRICE)
+        .prize_amount(MIN_TICKET_PRICE * 2)
+        .prizes(soroban_sdk::vec![&env, 10_000u32])
+        .randomness_source(RandomnessSource::Internal)
+        .claim_lockup_seconds(0)
+        .build()
+        .expect("valid premature finalize config");
+
+    client.init(&factory, &admin, &creator, &config);
+    client.deposit_prize();
+    client.buy_tickets(&buyer, &1);
+
+    env.ledger().set_timestamp(999);
+    env.set_auths(&[]);
+    assert_eq!(
+        client.try_finalize_raffle(),
+        Err(Ok(Error::InvalidStateTransition))
+    );
+    assert_eq!(client.get_raffle().status, RaffleStatus::Active);
+}

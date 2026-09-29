@@ -58,6 +58,23 @@ stateDiagram-v2
 - `Claimed`: terminal state when all claims are complete.
 - `Cancelled` / `Failed`: terminal non-success states.
 
+### Who can finalize
+
+`finalize_raffle` is **permissionless**: any address may call it, but only once the raffle is
+contractually over. The gate is `time_ended || tickets_full`, evaluated on chain:
+
+- `time_ended` — `ledger_timestamp >= end_time` (skipped when `no_deadline` is `true`).
+- `tickets_full` — `tickets_sold >= max_tickets`.
+
+Before either holds, the call reverts with `InvalidStateTransition`, so no raffle can be finalized
+early. A second call after the draw has progressed reverts with `InvalidStatus`, so finalization
+cannot be repeated.
+
+`finalize_raffle` does **not** require creator authorization. Its preconditions are fully
+verifiable on chain, so restricting it to the creator let a creator stall a raffle that was already
+over: buyers' funds stayed escrowed, and `refund_ticket` was unavailable because it requires
+`Cancelled` or `Failed`. Admin cancellation was the only remaining exit. See [#1000].
+
 ### Token egress and escrow solvency
 
 The instance has four intended token-moving paths:

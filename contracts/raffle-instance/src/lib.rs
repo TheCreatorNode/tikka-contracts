@@ -550,6 +550,14 @@ if config.randomness_source == RandomnessSource::External {
         result
     }
 
+    /// Advance a raffle out of `Active` once it is contractually over.
+    ///
+    /// Permissionless: any address may call this, but only after
+    /// `time_ended || tickets_full` holds. Before that it reverts with
+    /// `InvalidStateTransition`, so a raffle can never be finalized early.
+    /// Finalizing is idempotent with respect to the draw itself — the first
+    /// successful call takes `DrawingLock` and later calls revert with
+    /// `InvalidStatus`. #1000
     pub fn finalize_raffle(env: Env) -> Result<(), Error> {
         let result = draw::finalize_raffle(env.clone());
         #[cfg(any(test, feature = "testutils"))]

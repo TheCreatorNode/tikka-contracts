@@ -28,8 +28,12 @@ pub(crate) fn finalize_raffle(env: Env) -> Result<(), Error> {
         return Err(Error::DrawingAlreadyInProgress);
     }
     let mut raffle = read_raffle(&env)?;
-    raffle.creator.require_auth();
 
+    // Finalization is permissionless: the preconditions below (time_ended ||
+    // tickets_full) are fully verifiable on chain, so anyone may call this once
+    // they hold. Requiring creator auth let a creator stall a raffle that was
+    // already contractually over, leaving buyers' funds escrowed with no path
+    // out (refund_ticket needs Cancelled or Failed). #1000
     if raffle.status != RaffleStatus::Active && raffle.status != RaffleStatus::Drawing {
         return Err(Error::InvalidStatus);
     }
@@ -64,6 +68,11 @@ pub(crate) fn finalize_raffle(env: Env) -> Result<(), Error> {
         return Ok(());
     }
 
+    // `DrawTriggered.caller` keeps reporting the raffle creator. The SDK
+    // exposes no invoker address (`Env::invoker` does not exist in
+    // soroban-sdk 23.x), so now that finalization is permissionless there is no
+    // trustworthy value for this field; the event schema is unchanged to avoid
+    // breaking existing consumers. #1000
     let caller = raffle.creator.clone();
     let pre_status = raffle.status.clone();
     transition_to_drawing(&env, &mut raffle, now)?;
