@@ -53,7 +53,11 @@ When `no_deadline` is `true`, `end_time` is not enforced by any of the above; `R
 
 A single entry in a raffle draw owned by a participant. Each ticket represents one chance to win. A ticket is identified by a monotonic `id` unique to the raffle, recorded with the owner's address and purchase timestamp. See [`docs/EVENTS.md`](EVENTS.md) for the `TicketPurchased` event structure.
 
-**Code reference**: [`contracts/raffle-shared/src/lib.rs`](../contracts/raffle-shared/src/lib.rs) — `struct Ticket`
+A ticket records two distinct addresses: the `owner`, who is entered in the draw, and the `payer`, who paid for it. They are the same address for a self-purchase and differ for a gift purchase made with `buy_tickets_for`.
+
+**Refunds follow the payer, never the owner.** Every refund path — `refund_ticket` and `batch_refund_tickets` — credits `Ticket::payer` with `Ticket::price_paid`, so a refund always returns funds to the party that was out of pocket. For a gift purchase the owner receives nothing, and for a self-purchase payer and owner coincide. `refund_ticket` requires authorization from the payer; `batch_refund_tickets` may be called by either the payer or the owner of the ticket, but the funds are always sent to the payer.
+
+**Code reference**: [`contracts/raffle-shared/src/lib.rs`](../contracts/raffle-shared/src/lib.rs) — `struct Ticket`; [`contracts/raffle-instance/src/claim.rs`](../contracts/raffle-instance/src/claim.rs) — `refund_ticket`, `batch_refund_tickets`
 
 ### Prize
 

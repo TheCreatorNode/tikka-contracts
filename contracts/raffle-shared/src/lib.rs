@@ -308,7 +308,11 @@ impl RaffleConfig {
 pub struct Ticket {
     /// Monotonic ticket identifier scoped to a raffle.
     pub id: u32,
-    /// Address that owns this ticket.
+    /// Address that owns this ticket, i.e. the entrant in the draw.
+    ///
+    /// For a gift purchase (`buy_tickets_for`) this is the recipient and may
+    /// differ from [`Ticket::payer`]. The owner never receives refunds: see
+    /// [`Ticket::payer`].
     pub owner: Address,
     /// Unix timestamp when the ticket was purchased.
     pub purchase_time: u64,
@@ -316,6 +320,11 @@ pub struct Ticket {
     /// It is kept equal to `id` for the current contract implementation.
     pub ticket_number: u32,
     /// The address that paid for this ticket.
+    ///
+    /// Refunds follow the payer, never the owner, so that a refund always
+    /// returns funds to the party that was out of pocket. This holds for every
+    /// refund path (`refund_ticket` and `batch_refund_tickets`), including
+    /// gift purchases where payer and owner are distinct addresses.
     pub payer: Address,
     /// Price actually paid for this ticket (in token base units).
     /// Records the effective price including any early-bird discount.

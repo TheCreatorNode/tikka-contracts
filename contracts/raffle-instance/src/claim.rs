@@ -247,13 +247,13 @@ pub(crate) fn refund_ticket(env: Env, _caller: Address, ticket_id: u32) -> Resul
     token_client
         .try_transfer(
             &env.current_contract_address(),
-            &ticket.owner,
+            &ticket.payer,
             &ticket.price_paid,
         )
         .map_err(|_| Error::TokenTransferFailed)?
         .map_err(|_| Error::TokenTransferFailed)?;
     TicketRefunded {
-        buyer: ticket.owner,
+        buyer: ticket.payer,
         ticket_number: ticket.ticket_number,
         amount: ticket.price_paid,
         timestamp: env.ledger().timestamp(),
@@ -286,9 +286,9 @@ pub(crate) fn batch_refund_tickets(
         if !env.storage().persistent().has(&DataKey::TicketRefunded(ticket_id)) {
             env.storage().persistent().set(&DataKey::TicketRefunded(ticket_id), &true);
             
-            token_client.try_transfer(&env.current_contract_address(), &ticket.owner, &ticket.price_paid).map_err(|_| Error::TokenTransferFailed)?.map_err(|_| Error::TokenTransferFailed)?;
+            token_client.try_transfer(&env.current_contract_address(), &ticket.payer, &ticket.price_paid).map_err(|_| Error::TokenTransferFailed)?.map_err(|_| Error::TokenTransferFailed)?;
             
-            TicketRefunded { buyer: ticket.owner, ticket_number: ticket.ticket_number, amount: ticket.price_paid, timestamp: env.ledger().timestamp() }.publish(&env);
+            TicketRefunded { buyer: ticket.payer, ticket_number: ticket.ticket_number, amount: ticket.price_paid, timestamp: env.ledger().timestamp() }.publish(&env);
             
             total_refunded = total_refunded.checked_add(raffle.ticket_price).ok_or(Error::ArithmeticOverflow)?;
         }
