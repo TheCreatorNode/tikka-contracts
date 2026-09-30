@@ -488,11 +488,27 @@ impl OracleSeedWinnerSelection {
 ///
 /// Seeds are sorted by oracle address (XDR bytes, lexicographic) before
 /// concatenation so the result is **order-independent**: the same multiset of
-/// seeds always yields the same aggregate regardless of submission order.
+/// (address, seed) pairs always yields the same aggregate regardless of
+/// submission order.
 ///
-/// Each seed is appended as 8 big-endian bytes, then SHA-256 is applied.
-/// The first 8 bytes of the hash become the `u64` draw seed.
-pub fn aggregate_quorum_seeds(env: &Env, seeds: &Vec<(Address, u64)>) -> u64 {
+/// The hashed preimage is domain-separated and binds each seed to its
+/// contributor:
+///
+/// ```text
+/// address(this_contract).to_xdr() || request_id.to_be_bytes()
+///     || for each pair in sorted order: address.to_xdr() || seed.to_be_bytes()
+/// ```
+///
+/// Without the address prefix a contributor's own seed would be a function of
+/// the *multiset* of seed values alone, letting an oracle that observes the
+/// other submissions pick a value reproducing an already-seen aggregate. The
+/// `request_id` and contract address prefix keep the aggregate distinct across
+/// raffles and across requests, so the same $k$ seeds do not yield the same
+/// draw seed everywhere.
+///
+/// SHA-256 is applied to that buffer; the first 8 bytes become the `u64` draw
+/// seed.
+pub fn aggregate_quorum_seeds(env: &Env, request_id: u64, seeds: &Vec<(Address, u64)>) -> u64 {
     if seeds.is_empty() {
         return 0u64;
     }
@@ -522,9 +538,18 @@ pub fn aggregate_quorum_seeds(env: &Env, seeds: &Vec<(Address, u64)>) -> u64 {
         }
     }
 
+    // Domain separation: bind the aggregate to this raffle instance and to the
+    // specific randomness request, so identical seed multisets in different
+    // raffles (or different requests within one raffle) hash differently.
     let mut combined = Bytes::new(env);
+    let self_addr: Address = env.current_contract_address();
+    combined.append(&self_addr.to_xdr(env));
+    combined.extend_from_array(&request_id.to_be_bytes());
+
+    // Bind every seed to the oracle that contributed it.
     for i in 0..sorted.len() {
-        if let Some((_, seed)) = sorted.get(i) {
+        if let Some((addr, seed)) = sorted.get(i) {
+            combined.append(&addr.to_xdr(env));
             combined.extend_from_array(&seed.to_be_bytes());
         }
     }
@@ -649,7 +674,7 @@ mod tests {
             v.push_back((addr_a.clone(), 10u64));
             v.push_back((addr_b.clone(), 20u64));
             v.push_back((addr_c.clone(), 30u64));
-            aggregate_quorum_seeds(&env, &v)
+            aggregate_quorum_seeds(&env, 0u64, &v)
         });
 
         let reverse = env.as_contract(&contract, || {
@@ -657,7 +682,7 @@ mod tests {
             v.push_back((addr_c.clone(), 30u64));
             v.push_back((addr_b.clone(), 20u64));
             v.push_back((addr_a.clone(), 10u64));
-            aggregate_quorum_seeds(&env, &v)
+            aggregate_quorum_seeds(&env, 0u64, &v)
         });
 
         assert_eq!(forward, reverse);
@@ -678,7 +703,7 @@ mod tests {
             let mut v = Vec::new(&env);
             v.push_back((addr_b.clone(), 0xDEAD_BEEFu64));
             v.push_back((addr_a.clone(), 0xCAFE_BABEu64));
-            aggregate_quorum_seeds(&env, &v)
+            aggregate_quorum_seeds(&env, 0u64, &v)
         });
 
         // Exported to oracle/src/vrf/__fixtures__/quorum-aggregate-vectors.json
@@ -693,7 +718,7 @@ mod tests {
             .address();
         let result = env.as_contract(&contract, || {
             let v = Vec::new(&env);
-            aggregate_quorum_seeds(&env, &v)
+            aggregate_quorum_seeds(&env, 0u64, &v)
         });
         assert_eq!(result, 0);
     }

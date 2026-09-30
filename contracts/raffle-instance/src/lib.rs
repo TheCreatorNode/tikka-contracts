@@ -684,7 +684,7 @@ if config.randomness_source == RandomnessSource::External {
                 }
             }
 
-            let aggregate = randomness::aggregate_quorum_seeds(&env, &seeds);
+            let aggregate = randomness::aggregate_quorum_seeds(&env, request_id, &seeds);
             helpers::do_finalize_with_seed(&env, raffle, aggregate, RandomnessType::Quorum, Some(seeds))?;
         }
 

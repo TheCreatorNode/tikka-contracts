@@ -123,7 +123,7 @@ issue, not addressed here.
 2. Each oracle submits its randomness via `provide_randomness(random_seed, public_key, proof, request_id)`.
 3. The contract verifies the Ed25519 proof, matches `public_key` to a registered oracle in `oracles`, calls `oracle.require_auth()`, and enforces per-oracle deduplication (`duplicate submissions rejected`).
 4. Delivered seeds are accumulated on-chain under `DataKey::QuorumSeeds` and `DataKey::QuorumOraclesSubmitted`.
-5. Once at least $k$ unique registered oracles have submitted valid seeds, the contract aggregates all delivered seeds via SHA-256 over their concatenated big-endian bytes (`aggregate_quorum_seeds`) to form the final 64-bit seed.
+5. Once at least $k$ unique registered oracles have submitted valid seeds, the contract aggregates all delivered seeds via SHA-256 (`aggregate_quorum_seeds`) to form the final 64-bit seed. Pairs are sorted by oracle address XDR so the result is order-independent, and the hashed preimage is `address(this_contract).to_xdr() || request_id.to_be_bytes()` followed by `address.to_xdr() || seed.to_be_bytes()` per pair. Binding each seed to its contributor prevents an oracle from replaying a previously-seen aggregate, and the contract-address/request prefix keeps identical seed multisets from producing the same draw seed across raffles or requests.
 6. The raffle is finalized via `do_finalize_with_seed` using the aggregated VRF seed.
 
 
@@ -515,7 +515,7 @@ Medium-stakes raffles where buyers can be asked to commit, and you want stronger
 2. Each oracle submits its randomness via `provide_randomness(random_seed, public_key, proof, request_id)`.
 3. The contract verifies the Ed25519 proof, matches `public_key` to a registered oracle in `oracles`, calls `oracle.require_auth()`, and enforces per-oracle deduplication (`duplicate submissions rejected`).
 4. Delivered seeds are accumulated on-chain under `DataKey::QuorumSeeds` and `DataKey::QuorumOraclesSubmitted`.
-5. Once at least $k$ unique registered oracles have submitted valid seeds, the contract aggregates all delivered seeds via SHA-256 over their concatenated big-endian bytes (`aggregate_quorum_seeds`) to form the final 64-bit seed.
+5. Once at least $k$ unique registered oracles have submitted valid seeds, the contract aggregates all delivered seeds via SHA-256 (`aggregate_quorum_seeds`) to form the final 64-bit seed. Pairs are sorted by oracle address XDR so the result is order-independent, and the hashed preimage is `address(this_contract).to_xdr() || request_id.to_be_bytes()` followed by `address.to_xdr() || seed.to_be_bytes()` per pair. Binding each seed to its contributor prevents an oracle from replaying a previously-seen aggregate, and the contract-address/request prefix keeps identical seed multisets from producing the same draw seed across raffles or requests.
 6. The raffle is finalized via `do_finalize_with_seed` using the aggregated VRF seed.
 
 

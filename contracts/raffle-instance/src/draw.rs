@@ -466,7 +466,7 @@ pub(crate) fn provide_quorum_randomness(
             }
         }
 
-        let aggregate = randomness::aggregate_quorum_seeds(&env, &seeds);
+        let aggregate = randomness::aggregate_quorum_seeds(&env, request_id, &seeds);
         crate::helpers::do_finalize_with_seed(&env, raffle, aggregate, RandomnessType::Quorum, Some(seeds))?;
     }
 
